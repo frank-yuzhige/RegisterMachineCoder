@@ -1,8 +1,11 @@
 module RegMachineCoder where
 
-import Control.Monad
+
+import Control.Monad hiding (failAndRestart)
 import Data.Array
 import Data.Maybe
+import Text.Read(readMaybe)
+import Text.ParserCombinators.Parsec
 
 newtype DPair = DPair {getDPair :: (Integer, Integer)}
   deriving (Eq, Ord)
@@ -39,11 +42,11 @@ instance Num TwoPow where
   negate (TP p b) = TP p (negate b)
 
 type Reg = Integer
-type Line = Integer
+type LineCode = Integer
 type Program = [Instruction]
-data Instruction = Inc  Line Reg Line
-                 | Dec  Line Reg Line Line
-                 | Halt Line
+data Instruction = Inc  LineCode Reg LineCode
+                 | Dec  LineCode Reg LineCode LineCode
+                 | Halt LineCode
                  deriving (Eq)
 
 instance Show Instruction where
@@ -56,23 +59,23 @@ getReg (Halt _) = Nothing
 getReg (Inc _ r _) = Just r
 getReg (Dec _ r _ _) = Just r
 
-getLineCode :: Instruction -> Line
+getLineCode :: Instruction -> LineCode
 getLineCode (Halt l) = l
 getLineCode (Inc l _ _) = l
 getLineCode (Dec l _ _ _) = l 
 
-getTargets :: Instruction -> [Line]
+getTargets :: Instruction -> [LineCode]
 getTargets (Halt _) = []
 getTargets (Inc _ _ t) = [t]
 getTargets (Dec _ _ t1 t2) = [t1, t2]
 
-data RegMachine = RM { getProgramArray :: Array Line Instruction
+data RegMachine = RM { getProgramArray :: Array LineCode Instruction
                      , getState :: Array Reg Integer
-                     , getPC :: Line
+                     , getPC :: LineCode
                      }
                 deriving (Show)
 
-data ResultType = ErroneousHalt | NormalHalt Line
+data ResultType = ErroneousHalt | NormalHalt LineCode
                 deriving (Eq, Show)
 
 appendConfig :: [Integer] -> Result -> Result
@@ -87,6 +90,7 @@ evalResult (Result cs t) =
   "It finished with " ++ show t ++ "\n" ++
   "It's final state is: " ++ show (last cs) ++ "\n" ++
   "The full computation is: " ++ show cs
+
 setupRM :: Program -> [Integer] -> Maybe RegMachine
 setupRM _ [] = Nothing
 setupRM ps (pc : ss) 
@@ -102,13 +106,13 @@ runRM1Step :: RegMachine -> Either Result RegMachine
 runRM1Step (RM ps state pc)
   | pc > u    = Left $ Result [pc : elems state] ErroneousHalt
   | otherwise = case ps ! pc of
-      Halt l        -> Left $ Result [l : elems state] (NormalHalt l)
+      Halt k        -> Left $ Result [k : elems state] (NormalHalt k)
       Inc _ r next  -> Right $ RM ps (state // [(r, (state ! r) + 1)]) next
       Dec _ r n1 n2 -> let rVal = state ! r 
                        in Right $ if rVal == 0 then RM ps state n2
                                                else RM ps (state // [(r, rVal - 1)]) n1
   where
-    (l, u) = bounds ps
+    (_, u) = bounds ps
 
 runRM :: RegMachine -> Result
 runRM rm = case runRM1Step rm of
@@ -131,7 +135,7 @@ toTwoPow n = TP x y
 neutralizeTP :: Integer -> Integer -> TwoPow
 neutralizeTP p b
   | b == 0          = TP 0 0
-  | r == 0 && q > 0 = neutralizeTP  (p + 1) q
+  | r == 0 && q > 0 = neutralizeTP (p + 1) q
   | otherwise       = TP p b
   where
     (q, r) = b `quotRem` 2
@@ -192,17 +196,56 @@ encodeInstruction (Dec _ i j k) = fromDPair (DPair (2 * i + 1, fromSPair (SPair 
 encodeProgram :: Program -> TwoPow
 encodeProgram = encodeList . map (fromTwoPow . encodeInstruction)
 
--- decodeProgramWithSteps :: IO ()
--- decodeProgramWithSteps = do
---   putStrLn "2^m * n, please input m:"
---   m <- (read <$> getLine) :: IO Integer
---   putStrLn "please input n:"
---   n <- (read <$> getLine) :: IO Integer
---   let tp = neutralizeTP m n
---   putStrLn $ "Your original code is: " ++ show tp
---   let list = decodeList tp
---   putStrLn $ "Decoded list is: " ++ show list
---   mapM_ list
+inputProgramAndEncode :: IO TwoPow
+inputProgramAndEncode = do 
+  p <- getProgram
+  putStrLn $ "OK, the program is: \n" ++ show p
+  return $ encodeProgram p
 
-ps = decodeProgramFromList [184, 0, 1144, 4600, 0 ,1]
-rm = fromJust $ setupRM ps [0, 0, 7]
+getProgram :: IO Program
+getProgram = do
+  putStrLn $ "Input number of instructions: "
+  num <- getLine
+  case readMaybe num :: Maybe Integer of
+    Nothing -> putStrLn "Invalid number of instructions!" >> getProgram
+    Just r  -> forM [0..r] (
+      \x -> do 
+        i <- getInstruction x;
+        putStrLn $ "OK, No.[" ++ show x ++ "] is " ++ show i
+        return i
+      )
+      
+
+getInstruction :: LineCode -> IO Instruction
+getInstruction x = do
+  putStrLn $ "No.[" ++ show x ++ "], input register number or halt:"
+  reg <- getLine
+  case readMaybe reg :: Maybe Integer of
+    Nothing -> if reg == "halt" then return (Halt x) 
+                                else failAndRestart "Invalid register number!"
+    Just r  -> do
+      putStrLn "Input +/-:"
+      sign <- getLine
+      case sign of 
+        "+" -> do putStrLn "Input dest name:"
+                  n <- getLine
+                  case readMaybe n :: Maybe Integer of
+                    Nothing -> failAndRestart "Invalid instruction lable!"
+                    Just n' -> return $ Inc x r n'
+        "-" -> do putStrLn "Input dest1 name:"
+                  n1 <- getLine
+                  case readMaybe n1 :: Maybe Integer of
+                    Nothing  -> failAndRestart "Invalid instruction lable!"
+                    Just n1' -> do putStrLn "Input dest2 name:"
+                                   n2 <- getLine
+                                   case readMaybe n2 :: Maybe Integer of
+                                     Nothing  -> failAndRestart "Invalid instruction lable!"
+                                     Just n2' -> return $ Dec x r n1' n2'
+        _   -> failAndRestart "Invalid operator!"
+  where
+    failAndRestart msg = putStrLn msg >> getInstruction x
+    
+exampleProgram :: Program
+exampleProgram = decodeProgramFromList [184, 0, 1144, 4600, 0 ,1]
+exampleMachine :: RegMachine
+exampleMachine = fromJust $ setupRM exampleProgram [0, 0, 7]
