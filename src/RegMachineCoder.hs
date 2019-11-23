@@ -1,7 +1,7 @@
 module RegMachineCoder where
 
 
-import Control.Monad hiding (failAndRestart)
+import Control.Monad
 import Data.Array
 import Data.Maybe
 import Text.Read(readMaybe)
@@ -50,9 +50,9 @@ data Instruction = Inc  LineCode Reg LineCode
                  deriving (Eq)
 
 instance Show Instruction where
-  show (Halt c) = "[L" ++ show c ++ "]: HALT\n"
-  show (Inc c l t) = "[L" ++ show c ++ "]: R" ++ show l ++ "+ => L" ++ show t ++ "\n"
-  show (Dec c l t1 t2) = "[L" ++ show c ++ "]: R" ++ show l ++ "- => L" ++ show t1 ++ ",L" ++ show t2 ++ "\n"
+  show (Halt c) = "[L" ++ show c ++ "]: HALT"
+  show (Inc c l t) = "[L" ++ show c ++ "]: R" ++ show l ++ "+ => L" ++ show t
+  show (Dec c l t1 t2) = "[L" ++ show c ++ "]: R" ++ show l ++ "- => L" ++ show t1 ++ ",L" ++ show t2
 
 getReg :: Instruction -> Maybe Reg
 getReg (Halt _) = Nothing
@@ -121,6 +121,11 @@ runRM rm = case runRM1Step rm of
 
 getRMConfig :: RegMachine -> [Integer]
 getRMConfig (RM _ state pc) = pc : elems state
+
+runAndEvalRM :: RegMachine -> IO ()
+runAndEvalRM rm = do
+  printAll $ elems $ getProgramArray rm
+  putStrLn $ evalResult $ runRM rm
 
 fromTwoPow :: TwoPow -> Integer
 fromTwoPow (TP p b) = 2 ^ p * b
@@ -208,13 +213,12 @@ getProgram = do
   num <- getLine
   case readMaybe num :: Maybe Integer of
     Nothing -> putStrLn "Invalid number of instructions!" >> getProgram
-    Just r  -> forM [0..r] (
-      \x -> do 
-        i <- getInstruction x;
-        putStrLn $ "OK, No.[" ++ show x ++ "] is " ++ show i
-        return i
-      )
-      
+    Just r  -> do p <- forM [0..r] getInstruction 
+                  printAll p
+                  return p
+
+printAll :: (Show a, Traversable t) => t a -> IO ()
+printAll = mapM_ print 
 
 getInstruction :: LineCode -> IO Instruction
 getInstruction x = do
