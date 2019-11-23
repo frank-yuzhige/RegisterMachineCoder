@@ -1,6 +1,8 @@
 module RegMachineCoder where
 
 import Control.Monad
+import Data.Array
+import Data.Maybe
 
 newtype DPair = DPair {getDPair :: (Integer, Integer)}
   deriving (Eq, Ord)
@@ -39,15 +41,82 @@ instance Num TwoPow where
 type Reg = Integer
 type Line = Integer
 type Program = [Instruction]
-data Instruction = Inc  {getLineCode :: Line, getLHS :: Reg, getT :: Line}
-                 | Dec  {getLineCode :: Line, getLHS :: Reg, getT1 :: Line, getT2 :: Line}
-                 | HALT {getLineCode :: Line}
+data Instruction = Inc  Line Reg Line
+                 | Dec  Line Reg Line Line
+                 | Halt Line
                  deriving (Eq)
 
 instance Show Instruction where
-  show (HALT c) = "[L" ++ show c ++ "]: HALT\n"
+  show (Halt c) = "[L" ++ show c ++ "]: HALT\n"
   show (Inc c l t) = "[L" ++ show c ++ "]: R" ++ show l ++ "+ => L" ++ show t ++ "\n"
   show (Dec c l t1 t2) = "[L" ++ show c ++ "]: R" ++ show l ++ "- => L" ++ show t1 ++ ",L" ++ show t2 ++ "\n"
+
+getReg :: Instruction -> Maybe Reg
+getReg (Halt _) = Nothing
+getReg (Inc _ r _) = Just r
+getReg (Dec _ r _ _) = Just r
+
+getLineCode :: Instruction -> Line
+getLineCode (Halt l) = l
+getLineCode (Inc l _ _) = l
+getLineCode (Dec l _ _ _) = l 
+
+getTargets :: Instruction -> [Line]
+getTargets (Halt _) = []
+getTargets (Inc _ _ t) = [t]
+getTargets (Dec _ _ t1 t2) = [t1, t2]
+
+data RegMachine = RM { getProgramArray :: Array Line Instruction
+                     , getState :: Array Reg Integer
+                     , getPC :: Line
+                     }
+                deriving (Show)
+
+data ResultType = ErroneousHalt | NormalHalt Line
+                deriving (Eq, Show)
+
+appendConfig :: [Integer] -> Result -> Result
+appendConfig xs (Result xss t) = Result (xs : xss) t 
+
+data Result = Result [[Integer]] ResultType
+            deriving (Eq, Show)
+
+evalResult :: Result -> String
+evalResult (Result cs t) = 
+  "The register machine starts with config: " ++ show (head cs) ++ "\n" ++
+  "It finished with " ++ show t ++ "\n" ++
+  "It's final state is: " ++ show (last cs) ++ "\n" ++
+  "The full computation is: " ++ show cs
+setupRM :: Program -> [Integer] -> Maybe RegMachine
+setupRM _ [] = Nothing
+setupRM ps (pc : ss) 
+  | not $ all (`elem` [0 .. regCount]) lhsRegs = Nothing
+  | otherwise = Just $ RM (array (0, insCount - 1) ps') (array (0, regCount - 1) $ zip [0..] ss) pc 
+  where
+    insCount = fromIntegral $ length ps
+    regCount = fromIntegral $ length ss
+    lhsRegs = mapMaybe getReg ps
+    ps' = zip (map getLineCode ps) ps
+
+runRM1Step :: RegMachine -> Either Result RegMachine
+runRM1Step (RM ps state pc)
+  | pc > u    = Left $ Result [pc : elems state] ErroneousHalt
+  | otherwise = case ps ! pc of
+      Halt l        -> Left $ Result [l : elems state] (NormalHalt l)
+      Inc _ r next  -> Right $ RM ps (state // [(r, (state ! r) + 1)]) next
+      Dec _ r n1 n2 -> let rVal = state ! r 
+                       in Right $ if rVal == 0 then RM ps state n2
+                                               else RM ps (state // [(r, rVal - 1)]) n1
+  where
+    (l, u) = bounds ps
+
+runRM :: RegMachine -> Result
+runRM rm = case runRM1Step rm of
+    Left result -> result
+    Right rm'   -> appendConfig (getRMConfig rm) $ runRM rm'
+
+getRMConfig :: RegMachine -> [Integer]
+getRMConfig (RM _ state pc) = pc : elems state
 
 fromTwoPow :: TwoPow -> Integer
 fromTwoPow (TP p b) = 2 ^ p * b
@@ -101,7 +170,7 @@ decodeList (TP p b)
     (q, _) = b `quotRem` 2
 
 decodeInstruction :: Integer -> Integer -> Instruction
-decodeInstruction 0 i = HALT i
+decodeInstruction 0 i = Halt i
 decodeInstruction c i
   | even x    = Inc i (x `div` 2) y
   | otherwise = Dec i (x `div` 2) j k
@@ -110,10 +179,13 @@ decodeInstruction c i
       SPair (j, k) = toSPair y
 
 decodeProgram :: TwoPow -> Program
-decodeProgram (TP p b) = zipWith decodeInstruction (decodeList $ neutralizeTP p b) [0..]
+decodeProgram (TP p b) = decodeProgramFromList (decodeList $ neutralizeTP p b)
+
+decodeProgramFromList :: [Integer] -> Program
+decodeProgramFromList = flip (zipWith decodeInstruction) [0..]
 
 encodeInstruction :: Instruction -> TwoPow
-encodeInstruction (HALT _) = TP 0 0
+encodeInstruction (Halt _) = TP 0 0
 encodeInstruction (Inc _ i l) = fromDPair (DPair (2 * i, l))
 encodeInstruction (Dec _ i j k) = fromDPair (DPair (2 * i + 1, fromSPair (SPair (j, k))))
 
@@ -131,3 +203,6 @@ encodeProgram = encodeList . map (fromTwoPow . encodeInstruction)
 --   let list = decodeList tp
 --   putStrLn $ "Decoded list is: " ++ show list
 --   mapM_ list
+
+ps = decodeProgramFromList [184, 0, 1144, 4600, 0 ,1]
+rm = fromJust $ setupRM ps [0, 0, 7]
